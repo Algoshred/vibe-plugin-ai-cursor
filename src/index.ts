@@ -265,6 +265,21 @@ interface ProviderAdapter {
 const PROVIDER_NAME = "cursor";
 const CLI_COMMAND = "cursor-agent";
 const DISPLAY_NAME = "Cursor";
+
+/**
+ * Resolve the cursor-agent binary path with the platform-correct extension.
+ * On Windows `Bun.spawn` calls CreateProcess directly which doesn't honour
+ * PATHEXT, so a bare `cursor-agent` won't find `cursor-agent.exe`/`.cmd`.
+ * `Bun.which` searches PATH the same way the shell does.
+ */
+function resolveCursorAgentCmd(): string {
+  const found =
+    typeof Bun !== "undefined" && typeof Bun.which === "function"
+      ? Bun.which(CLI_COMMAND)
+      : null;
+  if (found) return found;
+  return process.platform === "win32" ? `${CLI_COMMAND}.exe` : CLI_COMMAND;
+}
 // Cursor's well-known model IDs. The SDK accepts an optional ModelSelection
 // (id + variant params); when omitted the agent picks the user's default.
 const DEFAULT_MODEL = "auto";
@@ -608,7 +623,7 @@ class CursorCliAdapter implements ProviderAdapter {
       : prompt;
     const args = this.buildCliArgs(config, finalPrompt);
 
-    const proc = Bun.spawn([CLI_COMMAND, ...args], {
+    const proc = Bun.spawn([resolveCursorAgentCmd(), ...args], {
       stdout: "pipe",
       stderr: "pipe",
       cwd: config.workingDirectory || process.cwd(),
@@ -663,7 +678,7 @@ class CursorCliAdapter implements ProviderAdapter {
 
   async healthCheck(): Promise<{ ok: boolean; message?: string }> {
     try {
-      const proc = Bun.spawnSync([CLI_COMMAND, "--version"], {
+      const proc = Bun.spawnSync([resolveCursorAgentCmd(), "--version"], {
         timeout: 5000,
         stdout: "pipe",
         stderr: "ignore",
@@ -1179,7 +1194,7 @@ class CursorProvider implements AIAgentProvider {
 
 function getCliVersion(): string | null {
   try {
-    const proc = Bun.spawnSync([CLI_COMMAND, "--version"], {
+    const proc = Bun.spawnSync([resolveCursorAgentCmd(), "--version"], {
       timeout: 5000,
       stdout: "pipe",
       stderr: "ignore",
