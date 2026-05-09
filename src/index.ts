@@ -11,9 +11,16 @@
  */
 
 import { Elysia } from "elysia";
+import type { HostServices, VibePlugin } from "@vibecontrols/plugin-sdk";
+import {
+  BoundLogger,
+  ProviderRegistry,
+  TelemetryEmitter,
+  createLifecycleHooks,
+} from "@vibecontrols/plugin-sdk";
 
-// ── Locally Redeclared Interfaces ────────────────────────────────────────
-// (Avoid hard dependency on @vibecontrols/agent)
+// ── AI Provider Contract Types ──────────────────────────────────────────
+// (provider-specific contract — kept inline; not part of the SDK surface)
 
 type ProviderMode = "sdk" | "cli";
 
@@ -45,61 +52,6 @@ interface AIFileAttachment {
   mimeType: string;
   content: Buffer | string;
   size: number;
-}
-
-interface PluginCapabilities {
-  storage?: "none" | "read" | "rw";
-  secrets?: "none" | "read" | "rw";
-  gateway?: boolean;
-  broadcast?: boolean;
-  subprocess?: boolean;
-  audit?: boolean;
-  telemetry?: boolean;
-}
-
-interface VibePlugin {
-  capabilities?: PluginCapabilities;
-  name: string;
-  version: string;
-  description?: string;
-  tags?: Array<
-    "backend" | "frontend" | "cli" | "provider" | "adapter" | "integration"
-  >;
-  cliCommand?: string;
-  apiPrefix?: string;
-  prerequisites?: Array<{
-    name: string;
-    kind: "binary" | "npm" | "pip" | "cargo" | "manual";
-    requiresSudo: boolean;
-    description?: string;
-  }>;
-  createRoutes?: () => unknown;
-  providers?: { ai?: AIAgentProvider; [key: string]: unknown };
-  onServerStart?: (
-    app: unknown,
-    hostServices?: HostServices,
-  ) => void | Promise<void>;
-  onServerStop?: () => void | Promise<void>;
-  onCliSetup?: (
-    program: unknown,
-    hostServices?: HostServices,
-  ) => void | Promise<void>;
-}
-
-interface HostServices {
-  telemetry?: {
-    emit: (name: string, payload?: Record<string, unknown>) => void;
-  };
-  logger?: {
-    info: (source: string, msg: string) => void;
-    warn: (source: string, msg: string) => void;
-    error: (source: string, msg: string) => void;
-    debug: (source: string, msg: string) => void;
-  };
-  serviceRegistry?: {
-    getService: <T>(pluginName: string, serviceName: string) => T | undefined;
-  };
-  getConfig: (key: string) => string | undefined | Promise<string | undefined>;
 }
 
 type AISessionStatus =
@@ -745,17 +697,20 @@ class CursorProvider implements AIAgentProvider {
   private sessions = new Map<string, ManagedSession>();
   private logIngester: LogIngester | null = null;
   private hostServices: HostServices | null = null;
+  private logger: BoundLogger | null = null;
   private activeMode: ProviderMode | null = null;
   private adapter: ProviderAdapter | null = null;
   private cachedApiKey: string | undefined;
 
   setHostServices(hs: HostServices): void {
     this.hostServices = hs;
+    this.logger = new BoundLogger(hs.logger, `${PROVIDER_NAME}-provider`);
+    const registry = new ProviderRegistry(hs);
     this.logIngester =
-      hs.serviceRegistry?.getService<LogIngester>("ai", "log-ingester") ?? null;
+      registry.getProvider<LogIngester>("ai", "log-ingester") ?? null;
 
     // Warm the cache so detectMode() can see DB-stored credentials.
-    void Promise.resolve(hs.getConfig("CURSOR_API_KEY"))
+    void Promise.resolve(hs.getConfig?.("CURSOR_API_KEY"))
       .then((apiKey) => {
         const trimmed = apiKey?.trim();
         if (trimmed) this.cachedApiKey = trimmed;
@@ -781,7 +736,7 @@ class CursorProvider implements AIAgentProvider {
 
     if (this.cachedApiKey) return this.cachedApiKey;
 
-    if (this.hostServices) {
+    if (this.hostServices?.getConfig) {
       try {
         const apiKey = (
           await this.hostServices.getConfig("CURSOR_API_KEY")
@@ -1122,8 +1077,7 @@ class CursorProvider implements AIAgentProvider {
     env?: Record<string, string>;
   } | null {
     const env: Record<string, string> = {};
-    const apiKey =
-      process.env["CURSOR_API_KEY"]?.trim() || this.cachedApiKey;
+    const apiKey = process.env["CURSOR_API_KEY"]?.trim() || this.cachedApiKey;
     if (apiKey) env["CURSOR_API_KEY"] = apiKey;
     return { binary: CLI_COMMAND, env };
   }
@@ -1245,7 +1199,7 @@ class CursorProvider implements AIAgentProvider {
   }
 
   private log(level: "info" | "error" | "debug", msg: string): void {
-    this.hostServices?.logger?.[level]?.(`${PROVIDER_NAME}-provider`, msg);
+    this.logger?.[level](msg);
   }
 }
 
@@ -1322,17 +1276,41 @@ function createPrereqsRoutes() {
     });
 }
 
+const PLUGIN_NAME = "cursor";
+const PLUGIN_VERSION = "1.0.0";
+
 const provider = new CursorProvider();
 
-export const vibePlugin: VibePlugin = {
+const lifecycle = createLifecycleHooks({
+  name: PLUGIN_NAME,
+  telemetryEventName: "ai.provider.ready",
+  onInit: (hostServices: HostServices) => {
+    provider.setHostServices(hostServices);
+    new TelemetryEmitter(PLUGIN_NAME, PLUGIN_VERSION, hostServices).emit(
+      "ai.provider.ready",
+      { provider: PLUGIN_NAME },
+    );
+  },
+  onShutdown: () => {
+    for (const [id] of (provider as CursorProvider)["sessions"]) {
+      provider.destroySession(id).catch(() => {});
+    }
+  },
+});
+
+type CursorVibePlugin = VibePlugin & {
+  providers?: { ai?: AIAgentProvider };
+};
+
+export const vibePlugin: CursorVibePlugin = {
   capabilities: {
     secrets: "read",
     subprocess: true,
     gateway: false,
     telemetry: true,
   },
-  name: "cursor",
-  version: "1.0.0",
+  name: PLUGIN_NAME,
+  version: PLUGIN_VERSION,
   description:
     "Cursor AI agent provider for VibeControls (dual-mode: SDK + CLI)",
   tags: ["provider", "integration"],
@@ -1342,22 +1320,12 @@ export const vibePlugin: VibePlugin = {
       name: CLI_COMMAND,
       kind: "binary",
       requiresSudo: false,
-      description: `${DISPLAY_NAME} CLI for CLI mode`,
     },
   ],
   providers: { ai: provider },
   createRoutes: () => createPrereqsRoutes(),
-
-  onServerStart(_app, hostServices) {
-    hostServices?.telemetry?.emit("ai.provider.ready", { provider: "cursor" });
-    if (hostServices) provider.setHostServices(hostServices);
-  },
-
-  onServerStop() {
-    for (const [id] of (provider as CursorProvider)["sessions"]) {
-      provider.destroySession(id).catch(() => {});
-    }
-  },
+  onServerStart: lifecycle.onServerStart,
+  onServerStop: lifecycle.onServerStop,
 };
 
 export default vibePlugin;
