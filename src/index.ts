@@ -11,7 +11,11 @@
  */
 
 import { Elysia } from "elysia";
-import type { HostServices, VibePlugin } from "@vibecontrols/plugin-sdk";
+import type {
+  HostServices,
+  VibePlugin,
+  ProfileContext,
+} from "@vibecontrols/plugin-sdk";
 import {
   BoundLogger,
   ProviderRegistry,
@@ -1302,7 +1306,7 @@ type CursorVibePlugin = VibePlugin & {
   providers?: { ai?: AIAgentProvider };
 };
 
-export const vibePlugin: CursorVibePlugin = {
+export const createPlugin = (_ctx: ProfileContext): CursorVibePlugin => ({
   capabilities: {
     secrets: "read",
     subprocess: true,
@@ -1326,6 +1330,4 @@ export const vibePlugin: CursorVibePlugin = {
   createRoutes: () => createPrereqsRoutes(),
   onServerStart: lifecycle.onServerStart,
   onServerStop: lifecycle.onServerStop,
-};
-
-export default vibePlugin;
+});
