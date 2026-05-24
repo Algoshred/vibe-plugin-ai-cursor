@@ -72,6 +72,8 @@ type AILogType =
   | "error"
   | "metadata";
 
+type PermissionMode = "plan" | "acceptEdits" | "fullAuto";
+
 interface AISessionConfig {
   name: string;
   agentType: string;
@@ -80,7 +82,29 @@ interface AISessionConfig {
   temperature?: number;
   systemPrompt?: string;
   workingDirectory?: string;
+  /** Per-session autonomy level (CLI mode). Default: acceptEdits. */
+  permissionMode?: PermissionMode;
   providerConfig?: Record<string, unknown>;
+}
+
+/**
+ * Map the provider-agnostic permission mode to cursor-agent CLI flags.
+ * cursor-agent only exposes a binary auto-approve: `--force` (`-f`) approves
+ * all tool usage. In print mode without it, edits are only proposed
+ * (effectively read-only). There is no granular flag for "edits but gate
+ * commands", so plan/acceptEdits map to propose-only (no flag).
+ * Unknown/undefined falls back to acceptEdits — never the most-permissive.
+ * Targeted CLI: cursor-agent (Cursor CLI).
+ */
+export function permissionFlags(mode: PermissionMode | undefined): string[] {
+  switch (mode) {
+    case "fullAuto":
+      return ["--force"];
+    case "plan":
+    case "acceptEdits":
+    default:
+      return [];
+  }
 }
 
 interface AISession {
@@ -582,6 +606,7 @@ class CursorCliAdapter implements ProviderAdapter {
   private buildCliArgs(config: AISessionConfig, prompt: string): string[] {
     const args: string[] = [];
     if (config.model) args.push("--model", config.model);
+    args.push(...permissionFlags(config.permissionMode));
     // cursor-agent uses `-p`/`--print` for non-interactive prompts.
     args.push("--print", prompt);
     return args;
