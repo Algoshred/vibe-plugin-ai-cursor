@@ -275,13 +275,17 @@ const DISPLAY_NAME = "Cursor";
  * PATHEXT, so a bare `cursor-agent` won't find `cursor-agent.exe`/`.cmd`.
  * `Bun.which` searches PATH the same way the shell does.
  */
+function platformExeName(base: string): string {
+  return process.platform === "win32" ? `${base}.exe` : base;
+}
+
 function resolveCursorAgentCmd(): string {
   const found =
     typeof Bun !== "undefined" && typeof Bun.which === "function"
       ? Bun.which(CLI_COMMAND)
       : null;
   if (found) return found;
-  return process.platform === "win32" ? `${CLI_COMMAND}.exe` : CLI_COMMAND;
+  return platformExeName(CLI_COMMAND);
 }
 // Cursor's well-known model IDs. The SDK accepts an optional ModelSelection
 // (id + variant params); when omitted the agent picks the user's default.
