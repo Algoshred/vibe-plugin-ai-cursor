@@ -1278,6 +1278,27 @@ function createPrereqsRoutes() {
         };
       }
 
+      // The canonical installer (`curl … | bash`) relies on bash, which is not
+      // present on native Windows. Don't spawn bash there — point the user at
+      // the official Windows install method instead.
+      if (process.platform === "win32") {
+        return {
+          ok: false,
+          installed: [],
+          pendingSudo: [],
+          errors: [
+            {
+              name: CLI_COMMAND,
+              message:
+                `Automatic ${DISPLAY_NAME} CLI installation is not supported on ` +
+                `native Windows. Install the Cursor CLI manually by running ` +
+                `\`npm install -g cursor-agent\` (or follow the official guide at ` +
+                `https://cursor.com/docs/cli/overview), then retry.`,
+            },
+          ],
+        };
+      }
+
       const proc = Bun.spawnSync(CLI_INSTALL_COMMAND, {
         timeout: 180_000,
         stdout: "pipe",
